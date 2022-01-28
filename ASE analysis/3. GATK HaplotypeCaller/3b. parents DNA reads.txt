@@ -1,0 +1,304 @@
+---------------------------------------
+---------------------------------------
+
+##### DNA SEQUENCES #####
+#### find SNPs in the genome of the parents
+
+---------------------------------------
+---------------------------------------
+
+#### 1. ALLIGNMENT ####
+
+---------------------
+
+### i) indexing
+
+bwa index -p Hmel2.5bwaidx -a bwtsw /data/home/wolfproj/wolfproj-16/dna_data/assemblies/Heliconius_melpomene_melpomene_Hmel2.5.scaffolds.fa
+
+--------------------
+
+### ii) bwa mem
+## Burrows-Wheeler Allignment
+
+#!/bin/bash
+#SBATCH --partition=usual
+#SBATCH --job-name="Checktruncated"
+#SBATCH --mem=10000
+
+module load bwa/0.7.15
+
+for dir in ../raw_data/
+	do
+bwa mem /data/home/wolfproj/wolfproj-16/dna_data/assemblies/Hmel2.5bwaidx 
+	/data/home/wolfproj/wolfproj-16/dna_data/raw_data/${dir#../raw_data/}/*1.fq.gz 
+	/data/home/wolfproj/wolfproj-16/dna_data/raw_data/${dir#../raw_data/}/*2.fq.gz > 
+	/data/home/wolfproj/wolfproj-16/dna_data/raw_data/${dir#../raw_data/}bwa.sam
+done
+
+-------------------------
+
+## move all .sam files to the same directory
+
+individuals=$(ls -d *)
+for i in $individuals
+	do
+cd /data/home/wolfproj/wolfproj-16/dna_data/bwa/legs_results/F1_MPCP_young/2ndPass/$i
+mv Aligned.out.proper.sam /data/home/wolfproj/wolfproj-16/rna_data/STAR/legs_results/sams/F1_MPCP_young/${i}.sam
+done
+
+-------------------------
+
+#### 2. PRE-PROCESSING ####
+
+--------------------------
+
+### i) convert sam to bam
+
+#!/bin/bash
+#SBATCH --partition=usual
+#SBATCH --job-name="convert"
+#SBATCH --mem=10000
+
+for dir in ..*/
+do
+	#loop through files
+        for file in "$dir"/*.sam
+        do
+		#check if file exists
+                if [[ -f $file ]]
+                then
+			#write message into output, which file is being converted
+                        echo "Converting $file to ${file%.*}.bam"
+			#convert
+                        samtools view -bS $file > ${file%.*}.bam
+                fi
+        done
+done
+
+----------------------
+
+### ii) Check if bam files are truncated
+
+#!/bin/bash
+#SBATCH --partition=usual
+#SBATCH --job-name="Checktruncated"
+#SBATCH --mem=10000
+#SBATCH --time=1-00:00:00
+#SBATCH -w 'cruncher'
+
+module load samtools/1.4.1
+
+for file in /data/home/wolfproj/wolfproj-16/dna_data/bwa/sams/*.bam
+do
+	samtools quickcheck -v *.bam > bad_bams.fofn   && echo 'all ok' || echo 'some files failed check, see bad_bams.fofn'
+done
+----------------------
+
+### iii) sort bams
+
+ #!/bin/bash
+#SBATCH --partition=usual
+#SBATCH --job-name="SortBam"
+#SBATCH --mem=10000
+#SBATCH --mail-user=L.Asis@campus.lmu.de
+#SBATCH --mail-type=END
+#SBATCH --time=1-00:00:00
+#SBATCH -w 'cruncher'
+
+module load samtools/1.4.1
+
+for file in sams/*.bam
+do
+	#check if file exists
+    if [[ -f $file ]]
+        then
+	#write message into output, which file is being converted
+            echo "Converting $file to ${file%.*}.sorted.bam"
+	#convert
+			samtools sort $file -o ${file%.*}.sorted.bam
+    fi
+done
+
+----------------------
+
+### iv) index bams
+
+#!/bin/bash
+#SBATCH --partition=usual
+#SBATCH --job-name="IndexBam"
+#SBATCH --mem=10000
+#SBATCH --mail-user=L.Asis@campus.lmu.de
+#SBATCH --mail-type=END
+#SBATCH --time=1-00:00:00
+#SBATCH -w 'cruncher'
+
+module load samtools/1.4.1
+
+#loop through files
+for file in sams/*.sorted.bam
+do
+	#check if file exists
+    if [[ -f $file ]]
+        then
+			#write message into output, which file is being converted
+            echo "indexing $file"
+			#index
+            samtools index $file
+    fi
+done
+
+----------------------
+
+### v) adding read group ID
+
+##read file headers and compile info into a separate .txt file
+zless *.fq.gz
+
+
+#!/bin/bash
+#SBATCH --partition=usual
+#SBATCH --job-name="picard"
+#SBATCH --mem=10000
+#SBATCH --time=1-00:00:00
+
+for file in sams/*sorted.bam
+do
+        if [[ -f $file ]]
+        then
+                echo "adding rgid to ${file}"
+                java -jar /data/home/wolfproj/wolfproj-16/programs/picard/picard.jar AddOrReplaceReadGroups I=/data/home/wolfproj/wolfproj-16/dna_data/bwa/${file} O=/data/home/wolfproj/wolfproj-16/dna_data/bwa/${file%.bam}_RG.bam RGID=HTWGYDSXX:2 RGLB=${file%_*} RGPL=illumina RGPU=A00783:221 RGSM=${file%_*}
+        fi
+done
+
+----------------------
+
+### vi) mark duplicates & re-index
+
+
+#!/bin/bash
+#SBATCH --partition=usual
+#SBATCH --job-name="MarkDuplicates"
+#SBATCH --mem=10000
+#SBATCH --time=1-00:00:00
+#SBATCH --mail-user=L.Asis@campus.lmu.de
+#SBATCH --mail-type=END
+
+for file in sam_bam/*RG.bam
+do
+
+java -jar /data/home/wolfproj/wolfproj-16/programs/picard/picard.jar MarkDuplicates \
+I=/data/home/wolfproj/wolfproj-16/dna_data/bwa/$file \
+O=/data/home/wolfproj/wolfproj-16/dna_data/bwa/${file%.bam}_MarkD.bam \
+CREATE_INDEX=true \
+VALIDATION_STRINGENCY=LENIENT \
+M=/data/home/wolfproj/wolfproj-16/dna_data/bwa/sams/output.metrics
+
+done
+
+
+-----------------------
+
+#### 3. SNP CALLING ####
+### finding base pairs that are alternative to the reference (SNPs)
+
+#!/bin/bash
+#SBATCH --partition=prevail
+#SBATCH --job-name=haplotypecaller
+#SBATCH --time=7-00:00:00
+#SBATCH --mail-user=L.Asis@campus.lmu.de
+#SBATCH --mail-type=END
+#SBATCH -w 'cruncher'
+
+java -jar /data/home/wolfproj/wolfproj-16/programs/GATK/GenomeAnalysisTK.jar \
+        -T HaplotypeCaller \
+        -R /data/home/wolfproj/wolfproj-16/assemblies/Heliconius_melpomene_melpomene_Hmel2.5.scaffolds.fa \
+        -I /data/home/wolfproj/wolfproj-16/dna_data/bwa/sam_bam/DNA4_bwa_sorted_RG_MarkD.bam \
+        -o /data/home/wolfproj/wolfproj-16/dna_data/GATK/GATK_results/new/DNA4_output.vcf \
+        --heterozygosity 0.02
+
+# --heterozygosity = Heterozygosity value used to compute prior likelihoods for any locus
+
+-----------------------
+
+#### 4. FILTERING ####
+### marks SNPs which do not pass the filters
+
+#!/bin/bash
+#SBATCH --partition=usual
+#SBATCH --job-name="filter"
+#SBATCH --mem=100000
+#SBATCH --time=1-00:00:00
+#SBATCH --mail-user=L.Asis@campus.lmu.de
+#SBATCH --mail-type=END
+#SBATCH -w 'cruncher'
+
+#for file in /GATK_results/new/*_output.vcf
+#do
+java -jar /data/home/wolfproj/wolfproj-16/programs/GATK/GenomeAnalysisTK.jar \
+                -T VariantFiltration \
+                -R /data/home/wolfproj/wolfproj-16/assemblies/Heliconius_melpomene_melpomene_Hmel2.5.scaffolds.fa\
+                -V /data/home/wolfproj/wolfproj-16/dna_data/GATK/GATK_results/new/DNA4_output_filtered2.vcf\
+                -o /data/home/wolfproj/wolfproj-16/dna_data/GATK/GATK_results/new/DNA4_output_filtered3.vcf\
+                -filter "ReadPosRankSum < -8.0" --filterName "ReadPosRankSum-8"\
+                -filter "MQRankSum < -12.5" --filterName "MQRankSum-12.5"\
+                -filter "MQ < 40.0" --filterName "MQ40"
+                #-filter "FS > 60.0" --filterName "FS60"\
+                #-filter "QUAL < 30.0" --filterName "QUAL30"\
+                #-filter "SOR > 3.0" --filterName "SOR3"
+                #-filter "QD < 2.0" --filterName "QD2"
+
+
+### select variants
+## remove SNPs that do not pass filters
+
+#!/bin/bash
+#SBATCH --partition=usual
+#SBATCH --job-name="selectVariants"
+#SBATCH --mem=10000
+#SBATCH --time=1-00:00:00
+#SBATCH --mail-user=L.Asis@campus.lmu.de
+#SBATCH --mail-type=END
+#SBATCH -w 'cruncher'
+
+java -jar /data/home/wolfproj/wolfproj-16/programs/GATK/GenomeAnalysisTK.jar \
+        -T SelectVariants \
+        -R /data/home/wolfproj/wolfproj-16/assemblies/Heliconius_melpomene_melpomene_Hmel2.5.scaffolds.fa \
+        -V /data/home/wolfproj/wolfproj-16/dna_data/GATK/GATK_results/new/DNA4_output_filtered3.vcf \
+        -selectType SNP \
+        --excludeFiltered \
+        -o /data/home/wolfproj/wolfproj-16/dna_data/GATK/GATK_results/new/DNA4_output_filtered_SNP.vcf
+3_selectvariant.sh (END)
+
+### compress
+
+#!/bin/bash
+#SBATCH --partition=usual
+#SBATCH --job-name="bgzip"
+#SBATCH -n 5
+#SBATCH --time=1-00:00:00
+#SBATCH --mail-user=L.Asis@campus.lmu.de
+#SBATCH --mail-type=END
+#SBATCH -w 'cruncher'
+
+for file in GATK_results/new/*SNP.vcf
+do
+        bgzip /data/home/wolfproj/wolfproj-16/dna_data/GATK/$file
+done
+
+### index
+
+#!/bin/bash
+#SBATCH --partition=usual
+#SBATCH --job-name="tabix"
+#SBATCH -n 5
+#SBATCH --time=1-00:00:00
+#SBATCH --mail-user=L.Asis@campus.lmu.de
+#SBATCH --mail-type=END
+#SBATCH -w 'cruncher'
+
+for file in GATK_results/new/*_SNP.vcf.gz
+do
+        tabix /data/home/wolfproj/wolfproj-16/dna_data/GATK/$file
+done
+
+-----------------------------

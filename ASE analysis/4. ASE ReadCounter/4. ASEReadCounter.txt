@@ -1,0 +1,175 @@
+-----------------------------
+
+#### Allele Specific Expression
+
+-----------------------------
+
+1. PARENT INTERSECTIONS
+
+### in parental samples, find SNPs that are unique to each parent
+
+#!/bin/bash
+#SBATCH --partition=usual
+#SBATCH --job-name="isec"
+#SBATCH -n 5
+#SBATCH --time=1-00:00:00
+#SBATCH --mail-user=L.Asis@campus.lmu.de
+#SBATCH --mail-type=END
+#SBATCH -w 'cruncher'
+
+module load bcftools/1.4.1
+
+bcftools isec \
+        /data/home/wolfproj/wolfproj-16/dna_data/ASE/GATK_results/011/DNA3_output_filtered_SNP.vcf.gz \
+        /data/home/wolfproj/wolfproj-16/dna_data/ASE/GATK_results/011/DNA4_output_filtered_SNP.vcf.gz \
+        -p /data/home/wolfproj/wolfproj-16/dna_data/ASE/ASE_results/011/
+
+# output files are 0000.vcf and 0001.vcf
+
+------------------------------
+
+## compress output vcf files
+
+#!/bin/bash
+#SBATCH --partition=usual
+#SBATCH --job-name="bgzip"
+#SBATCH -n 5
+#SBATCH --time=1-00:00:00
+#SBATCH --mail-user=L.Asis@campus.lmu.de
+#SBATCH --mail-type=END
+#SBATCH -w 'cruncher'
+
+for brood in ASE_results/*
+do
+        for file in $brood/*.vcf
+        do
+                bgzip /data/home/wolfproj/wolfproj-16/dna_data/ASE/$file
+        done
+done
+
+-------------------------------
+## index compressed vcf files
+
+#!/bin/bash
+#SBATCH --partition=usual
+#SBATCH --job-name="tabix"
+#SBATCH -n 5
+#SBATCH --time=1-00:00:00
+#SBATCH --mail-user=L.Asis@campus.lmu.de
+#SBATCH --mail-type=END
+#SBATCH -w 'cruncher'
+
+for brood in ASE_results/*
+do
+        for file in $brood/*vcf.gz
+        do
+                tabix -p vcf /data/home/wolfproj/wolfproj-16/dna_data/ASE/$file
+        done
+done
+
+-----------------------------
+
+#### 2. F1 x PARENT INTERSECTIONS
+
+### find intersection of SNPs that are shared between F1 hybrids and the unique SNPs of their parents (from step 1.)
+### do each parent species separately - write output files as "cyd" or "melp" parent
+
+#!/bin/bash
+#SBATCH --partition=usual
+#SBATCH --job-name="isec"
+#SBATCH -n 2
+#SBATCH --time=1-00:00:00
+#SBATCH -w 'cruncher'
+
+module load bcftools/1.4.1
+
+#for file in GATK_results/antennae_results/007/*.gz
+for file in GATK_results/legs_results/007/*.gz
+do
+        bcftools isec \
+                /data/home/wolfproj/wolfproj-16/dna_data/ASE/ASE_results/007/0000.vcf.gz \
+                /data/home/wolfproj/wolfproj-16/rna_data/ASE/$file \
+                #-p /data/home/wolfproj/wolfproj-16/rna_data/ASE/ASE_results/antennae_results/007/${file:30:3}/cyd
+                -p /data/home/wolfproj/wolfproj-16/rna_data/ASE/ASE_results/legs_results/007/${file:30:3}/cyd
+done
+
+-------------------------------
+
+### sort
+
+!/bin/bash
+#SBATCH --partition=usual
+#SBATCH --job-name="sort"
+#SBATCH -n 1
+#SBATCH --time=1-00:00:00
+#SBATCH -w 'cruncher'
+
+for brood in ASE_results/antennae_results/*
+do
+        for id in $brood/*
+        do
+                for parent in $id/*
+                do
+                        java -jar /data/home/wolfproj/wolfproj-16/programs/picard/picard.jar \
+                                SortVcf \
+                                I=/data/home/wolfproj/wolfproj-16/rna_data/ASE/$parent/0003.vcf \
+                                O=/data/home/wolfproj/wolfproj-16/rna_data/ASE/$parent/0003_sort.vcf \
+                                SEQUENCE_DICTIONARY=/data/home/wolfproj/wolfproj-16/assemblies/Heliconius_melpomene_melpomene_Hmel2.5.scaffolds.dict
+                done
+        done
+done
+
+-----------------------------------
+
+### index 
+
+
+#!/bin/bash
+#SBATCH --partition=usual
+#SBATCH --job-name="index"
+#SBATCH -n 1
+#SBATCH --time=1-00:00:00
+#SBATCH -w 'cruncher'
+
+module load vcftools/0.1.14
+
+for brood in ASE_results/antennae_results/*
+do
+        for id in $brood/*
+        do
+                for parent in $id/*
+                do
+                        vcftools index /data/home/wolfproj/wolfproj-16/rna_data/ASE/$parent/0003_sort.vcf
+                done
+        done
+done
+
+-----------------------------------
+
+#### 3. ASEReadCounter
+
+### gives list of SNPs that are unique to each parent species and their expression counts
+
+#!/bin/bash
+#SBATCH --partition=usual
+#SBATCH --job-name=ASE
+#SBATCH -n 2
+#SBATCH --time=1-00:00:00
+#SBATCH --mail-user=L.Asis@campus.lmu.de
+#SBATCH --mail-type=END
+#SBATCH -w 'cruncher'
+
+#for file in bams/antennae_results/007/*.bam
+for file in bams/legs_results/007/*.bam
+do
+#       id=${file:26:3}
+       id=${file:22:3}
+        java -jar /data/home/wolfproj/wolfproj-16/programs/GATK/GenomeAnalysisTK.jar \
+                -T ASEReadCounter \
+                -R /data/home/wolfproj/wolfproj-16/assemblies/Heliconius_melpomene_melpomene_Hmel2.5.scaffolds.fa \
+                -I /data/home/wolfproj/wolfproj-16/rna_data/ASE/bams/legs_results/007/60_sorted_RG_mark_split.bam \
+                -sites /data/home/wolfproj/wolfproj-16/rna_data/ASE/ASE_results/legs_results/007/60_/melp/0003_sort.vcf \
+                -U ALLOW_N_CIGAR_READS \
+               -drf DuplicateRead -minDepth 4 --minBaseQuality 2 \
+                -o /data/home/wolfproj/wolfproj-16/rna_data/ASE/ASE_results/legs_results/007/all/60__007_melp.vcf
+done

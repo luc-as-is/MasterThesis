@@ -1,0 +1,193 @@
+--------------------------------
+--------------------------------
+
+##### RNAseq DATA  #####
+
+RNAseq data from legs and antennae of F1 individuals.
+Here, I quantify gene expression by counting RNA reads and use the results to compare between groups (age, sex, brood)
+
+---------------------------------
+---------------------------------
+
+#### 1. TRIM ####
+### TRIMGALORE 
+
+---------------------------------
+
+## trims ends of reads that may not be good quality because of sequencing
+
+#!/bin/bash
+#SBATCH -J "TrimGalore"
+#SBATCH --mem 10000
+#SBATCH -t 1-00:00:00
+#SBATCH -p usual
+#SBATCH --mail-user=L.Asis@campus.lmu.de
+#SBATCH --mail-type=END
+
+module load cutadapt/1.9.1
+module load trimgalore/0.4.4
+module load fastqc/0.11.5
+
+for i in /data/home/wolfproj/wolfproj-16/rna_data/antennae/F1_MPCP/
+	do
+trim_galore --illumina --paired --length 30 --stringency 3 --trim-n --fastqc 
+	--output_dir /data/home/wolfproj/wolfproj-16/rna_data/TrimGalore/antennae_results/F1_MPCP/$i/ \
+	/data/home/wolfproj/wolfproj-16/rna_data/antennae/F1_MPCP/$i/*_1.fq.gz \
+	/data/home/wolfproj/wolfproj-16/rna_data/antennae/F1_MPCP/$i/*_2.fq.gz
+done
+
+## --illumina - sequence method which was used
+## --paired - paired-end reads (*_1.fq.gz & *_2.fq.gz)
+## --length 30 - Discard reads that became shorter than length INT because of either quality or adapter trimming
+## --stringency 3 - Overlap with adapter sequence required to trim a sequence.
+## --trim-n - Removes Ns from either side of the read.
+## --fastqc - runs FastQC to check for quality
+
+---------------------------------
+
+#### 2. ALLIGNMENT ####
+https://hbctraining.github.io/Intro-to-rnaseq-hpc-O2/lessons/03_alignment.html
+
+---------------------------------
+
+### STAR
+## STAR alligns the RNAseq reads to the reference genome. It takes different splice patterns into account when alligning
+
+### i) indexing genome
+## indexing marks the reference genome to make aligning faster and more efficient
+
+#!/bin/bash
+#SBATCH -J "STARindex"
+#SBATCH --mem 10000
+#SBATCH -t 1-00:00:00
+#SBATCH -p usual
+#SBATCH --mail-user=L.Asis@campus.lmu.de
+#SBATCH --mail-type=END
+
+module load STAR/2.4.2a
+
+STAR --runThreadN 1 \
+	--runMode genomeGenerate \
+	--genomeDir /data/home/wolfproj/wolfproj-16/rna_data/STAR/hmel2_index\
+	--genomeFastaFiles /data/home/wolfproj/wolfproj-16/rna_data/assemblies/Heliconius_melpomene_melpomene_Hmel2.5.scaffolds.fa\
+	--sjdbGTFfile /data/home/wolfproj/wolfproj-16/rna_data/annotations/Hmel2.5.gff3\
+	--sjdbGTFtagExonParentTranscript Parent\
+	--sjdbOverhang 144
+
+## --sjdbGTFtagExonParentTranscript Parent - required for GFF# formated annotations - The exons are assigned to the transcripts using parent-child relationship
+## --sjdbOverhang 144 - the length of genomic sequence around the annotatied junction to use
+
+------------------------
+
+### ii) mapping
+
+##1stPass
+
+#!/bin/bash
+#SBATCH -J STAR
+#SBATCH -n 1
+#SBATCH -t 23:59:59
+#SBATCH -p usual
+
+module load STAR/2.4.2a
+
+for i in /data/home/wolfproj/wolfproj-16/rna_data/TrimGalore/antennae_results/F1_MPCP/
+do
+	
+	STAR --runThreadN 1 
+		--genomeDir /data/home/wolfproj/wolfproj-16/rna_data/STAR/hmel2_index/ \
+		--readFilesIn $i/*_1.fq.gz $i/*_2.fq.gz \
+		--readFilesCommand zcat \
+		--outFilterType BySJout \
+		--outSJfilterIntronMaxVsReadN 50000 100000 150000 \
+		--outSAMattributes NH HI AS nM XS"
+done
+
+## --runThreadN 1 - number of threads to use = number of available cores on the server
+## --readFilesCommand zcat - use when read files are compressed
+## --outFilterType BySJout - keeps only reads that contain junctions that passed filtering
+## --outSJfilterIntronMaxVsReadN 50000 100000 150000 - maximum gap allowed for junctions supported by 1,2,3,...,N reads
+## --outSAMattributes NH HI AS nM XS - SAM attributes to be included in output
+ 
+-----------------------------
+##2ndpass
+
+#!/bin/bash
+#SBATCH -J STAR2
+#SBATCH -t 23:59:59
+#SBATCH -n 1
+#SBATCH -p usual
+
+module load STAR/2.4.2a
+
+for i in /data/home/wolfproj/wolfproj-16/rna_data/STAR/antennae_results/F1_MPCP/
+	do
+	
+STAR --runThreadN 1 \
+	--genomeDir /data/home/wolfproj/wolfproj-16/rna_data/STAR/hmel2_index/ \
+	--sjdbFileChrStartEnd /data/home/wolfproj/wolfproj-16/rna_data/STAR/antennae_results/F1_MPCP/1stPass/*/*J.out.tab \
+	--readFilesIn /data/home/wolfproj/wolfproj-16/rna_data/TrimGalore/antennae_results/F1_MPCP/$i/*_1.fq.gz \
+		/data/home/wolfproj/wolfproj-16/rna_data/TrimGalore/antennae_results/F1_MPCP/$i/*_2.fq.gz \
+	--readFilesCommand zcat \
+	--outFilterType BySJout \
+	--outSJfilterIntronMaxVsReadN 50000 100000 150000 \
+	--outSAMattributes NH HI AS nM XS
+done
+
+----------------------------------
+
+#### 3. COUNTING READS ####
+
+----------------------------------
+
+### i) SAMtools
+## keeps only properly mapped pairs
+
+#!/bin/bash';
+#SBATCH -J samtools';
+#SBATCH -t 23:59:59';
+#SBATCH -n 1';
+#SBATCH -p usual';
+
+module load samtools/1.4.1';
+
+for i in /data/home/wolfproj/wolfproj-16/rna_data/STAR/antennae_results/F1_MPCP/2ndPass/
+do
+samtools view -h -f 0x02 \
+	/data/home/wolfproj/wolfproj-16/rna_data/STAR/antennae_results/F1_MPCP/2ndPass/Aligned.out.sam \
+	> /data/home/wolfproj/wolfproj-16/rna_data/STAR/antennae_results/F1_MPCP/2ndPass/Aligned.out.proper.sam 
+done
+
+----------------------------------
+
+### ii) HTSeq
+## counts reads
+
+#!/bin/bash
+#SBATCH -J HTseq
+#SBATCH -n 1
+#SBATCH -t 23:59:59
+#SBATCH -p usual
+
+module load htseq/0.9.1
+
+for i in /data/home/wolfproj/wolfproj-16/rna_data/STAR/antennae_results/
+	do
+htseq-count -r pos \
+	-a 20 \
+	-m union \
+	--stranded no \ 
+	-t gene \
+	--idattr ID /data/home/wolfproj/wolfproj-16/rna_data/STAR/antennae_results/$i/2ndPass/Aligned.out.proper.sam \
+	/data/home/wolfproj/wolfproj-16/rna_data/annotations/Hmel2.5.gff3 > $i.propergenecounts.txt
+done
+
+## -r pos - indicates how the alignment was ordered. For paired-end data
+## -a 20 - skip all reads with alignment quality lower than the given minimum value 
+## -m union - mode to handle overlapping reads
+## --stranded no - if you do not have strand-specific data
+## -t gene - feature type to be used
+
+--------------------------------
+
+### Can now use gene counts for preliminary analysis to look for differences in gene expression due to sex, brood, and age

@@ -1,0 +1,364 @@
+--------------------------------
+
+#### RNAseq Data ####
+
+finding SNPs in the RNA reads of F1 hybrid individuals
+
+--------------------------------
+
+#### 1. PRE-PROCESSING ####
+### to prepare for haplotype caller
+
+--------------------------------
+
+
+### i) convert sam to bam
+
+#!/bin/bash
+#SBATCH --partition=usual
+#SBATCH --job-name="convert"
+#SBATCH --mem=10000
+
+for dir in ..*/
+do
+	#loop through files
+        for file in "$dir"/*.sam
+        do
+		#check if file exists
+                if [[ -f $file ]]
+                then
+			#write message into output, which file is being converted
+                        echo "Converting $file to ${file%.*}.bam"
+			#convert
+                        samtools view -bS $file > ${file%.*}.bam
+                fi
+        done
+done
+
+----
+###sort
+
+#!/bin/bash
+#SBATCH --partition=usual
+#SBATCH --job-name="picard"
+#SBATCH --mem=10000
+#SBATCH --mail-user=L.Asis@campus.lmu.de
+#SBATCH --mail-type=END
+#SBATCH --time=1-00:00:00
+#SBATCH -w 'cruncher'
+
+
+java -jar /data/home/wolfproj/wolfproj-16/programs/picard/picard.jar \
+SortSam I=/data/home/wolfproj/wolfproj-16//rna_data/STAR/antennae_results/sams/F1_MPCP/274.sam \
+O=/data/home/wolfproj/wolfproj-16/rna_data/picard/274_sorted.bam \
+SORT_ORDER=coordinate
+
+
+--------------------------------
+
+### ii) Check if bam files are truncated
+
+#!/bin/bash
+#SBATCH --partition=usual
+#SBATCH --job-name="Checktruncated"
+#SBATCH --mem=10000
+#SBATCH --time=1-00:00:00
+
+module load samtools/1.4.1
+
+samtools quickcheck -v *.bam > bad_bams.fofn   && echo 'all ok' || echo 'some files failed check, see bad_bams.fofn'
+
+----------------------
+
+### iii) sort bams
+
+ #!/bin/bash
+#SBATCH --partition=usual
+#SBATCH --job-name="SortBam"
+#SBATCH --mem=10000
+#SBATCH --mail-user=L.Asis@campus.lmu.de
+#SBATCH --mail-type=END
+#SBATCH --time=1-00:00:00
+#SBATCH -w 'cruncher'
+
+module load samtools/1.4.1
+
+for file in bams/antennae_results/F1_MPCP/*.bam
+do
+	#check if file exists
+    if [[ -f $file ]]
+        then
+	#write message into output, which file is being converted
+            echo "Converting $file to ${file%.*}.sorted.bam"
+	#convert
+			samtools sort $file -o ${file%.*}.sorted.bam
+    fi
+done
+
+----------------------
+
+### iv) index bams
+
+#!/bin/bash
+#SBATCH --partition=usual
+#SBATCH --job-name="IndexBam"
+#SBATCH --mem=10000
+#SBATCH --mail-user=L.Asis@campus.lmu.de
+#SBATCH --mail-type=END
+#SBATCH --time=1-00:00:00
+#SBATCH -w 'cruncher'
+
+module load samtools/1.4.1
+
+#loop through files
+for file in bams/antennae_results/F1_MPCP/*.sorted.bam
+do
+	#check if file exists
+    if [[ -f $file ]]
+        then
+			#write message into output, which file is being converted
+            echo "indexing $file"
+			#index
+            samtools index $file
+    fi
+done
+
+----------------------
+
+### v) adding RGIDs
+## read groups checks for biases that occurs during sequencing
+
+##read file headers and compile info into a separate .txt file
+zless *.fq.gz
+
+## check rgid.txt file for info 
+
+# read groupID: RGID=HTWYJDSXX:4
+# read group library: RGLB=$i
+# read group platform: RGPL=illumina
+# read group platform unit: RGPU=00877:167
+# read group sample: RGSM=$i
+	 
+----------------------
+	 
+#!/bin/bash
+#SBATCH -J "RGID"
+#SBATCH -n 1
+#SBATCH -t 23:59:59 
+
+for dir in bams/antennae_results/*/
+do 
+	for file in bams/antennae_results/F1_MPCP/*sorted.bam
+	do
+		if [[ -f $file ]]
+		then
+			echo "adding rgid to ${file}"
+			java -jar /data/home/wolfproj/wolfproj-16/programs/picard/picard.jar AddOrReplaceReadGroups \ 
+				I=/data/home/wolfproj/wolfproj-16/rna_data/picard/${file} \
+				O=/data/home/wolfproj/wolfproj-16/rna_data/picard/${file%.bam}_RG.bam \
+				RGID= \
+				RGLB= \
+				RGPL= \
+				RGPU= \ 
+				RGSM= 
+		fi
+	done
+done
+
+-----------------------
+
+### vi) mark duplicates & re-index
+## reads that may have been duplicated
+
+#!/bin/bash
+#SBATCH --partition=usual
+#SBATCH -n 3
+#SBATCH --job-name="MarkDuplicates"
+#SBATCH --time=1-00:00:00
+#SBATCH --mail-user=L.Asis@campus.lmu.de
+#SBATCH --mail-type=END
+
+for file in bams/legs_results/F1_MPCP_young/*_RG.bam
+do
+        java -jar /data/home/wolfproj/wolfproj-16/programs/picard/picard.jar MarkDuplicates \
+                I=/data/home/wolfproj/wolfproj-16/rna_data/picard/$file \
+                O=/data/home/wolfproj/wolfproj-16/rna_data/picard/${file%.bam}_mark.bam \
+                CREATE_INDEX=true VALIDATION_STRINGENCY=LENIENT \
+                M=/data/home/wolfproj/wolfproj-16/rna_data/picard/${file%.bam}_output.metrics
+done
+
+------------------------
+
+### vii) split n' trim & reassign mapping qualities
+##SplitNCigarReads splits reads into exon segments and hard-clip any sequences overhanging into the intronic regions
+
+
+#!/bin/bash
+#SBATCH -J "SplitNTrim"
+#SBATCH --mem 10000
+#SBATCH -t 1-00:00:00
+#SBATCH -p usual
+#SBATCH --mail-user=L.Asis@campus.lmu.de
+#SBATCH --mail-type=END
+
+for dir in bams/antennae_results/*
+do
+	for file in $dir/*_RG.bam
+	do
+		java -jar /data/home/wolfproj/wolfproj-16/programs/GATK/GenomeAnalysisTK.jar \
+			-T SplitNCigarReads \
+			-R /data/home/wolfproj/wolfproj-16/assemblies/Heliconius_melpomene_melpomene_Hmel2.5.scaffolds.fa \
+			-I /data/home/wolfproj/wolfproj-16/rna_data/picard/$file \
+			-o /data/home/wolfproj/wolfproj-16/rna_data/picard/${file%.bam}_split.bam \
+			-rf ReassignOneMappingQuality \
+			-RMQF 255 \	
+			-RMQT 60 \
+			-U ALLOW_N_CIGAR_READS
+	done
+ done
+
+
+-------------------------
+
+#### 2. VARIANT CALLING ####
+
+---------------------------
+
+### i) HaplotypeCaller
+
+## compares reads to the reference and marks variant basepairs
+
+#!/bin/bash
+#SBATCH -J GATK
+#SBATCH -n 1
+
+java -jar /data/home/wolfproj/wolfproj-06/7_GATK/GenomeAnalysisTK.jar 
+-T HaplotypeCaller 
+-R /data/home/wolfproj/wolfproj-06/Genome_assemblies/Melpomene/Heliconius_melpomene_melpomene_Hmel2.5.scaffolds.fa 
+-I /data/home/wolfproj/wolfproj-06/7_GATK/Adults/MP/$i/split.bam 
+-dontUseSoftClippedBases 
+-stand_call_conf 20.0 
+-o /data/home/wolfproj/wolfproj-06/7_GATK/Adults/MP/$i/output.vcf
+
+done
+
+#GATK filters out not uniquely mapped reads anyway (<MAPQ20)
+#-dontUseSoftClippedBases = take into account the information about intron-exon split regions that is embedded in the BAM file by SplitNCigarReads
+#-stand_call_conf 20.0 = minimum phred-scaled confidence threshold for calling variants is 20
+#by default the number of alternative alleles possible is 6 > maxAltAlleles (6)
+
+---------------------------
+
+### ii) filtering
+
+# mark SNPs that do not pass the filters
+
+#!/bin/bash
+#SBATCH --partition=usual
+#SBATCH --job-name=filter
+#SBATCH --time=1-00:00:00
+#SBATCH --mail-user=L.Asis@campus.lmu.de
+#SBATCH --mail-type=END
+#SBATCH -w 'cruncher'
+
+for dir in GATK_results/antennae_results/*
+do
+
+        for file in $dir/*.vcf
+        do
+                java -jar /data/home/wolfproj/wolfproj-16/programs/GATK/GenomeAnalysisTK.jar \
+                        -T VariantFiltration \
+                        -R /data/home/wolfproj/wolfproj-16/assemblies/Heliconius_melpomene_melpomene_Hmel2.5.scaffolds.fa \
+                        -V /data/home/wolfproj/wolfproj-16/rna_data/GATK/$file \
+                        -window 35 \
+                        -cluster 3 \
+                        -filter "FS > 30.0" --filterName "FS30" \
+                        -filter "QD < 2.0" --filterName "QD2" \
+                        -o /data/home/wolfproj/wolfproj-16/rna_data/GATK/${file%.vcf}_filtered.vcf
+        done
+done
+
+# FS = strand bias
+# QD = quality of depth
+
+--------------------------
+
+### iii) select variants
+## selects variant SNPs, removes filtered SNPs
+
+#!/bin/bash
+#SBATCH --partition=usual
+#SBATCH --job-name="selectVariants"
+#SBATCH --mem=10000
+#SBATCH --time=1-00:00:00
+#SBATCH -w 'cruncher'
+
+for dir in GATK_results/antennae_results/*
+do
+        for file in $dir/*filtered.vcf
+        do
+
+                java -jar /data/home/wolfproj/wolfproj-16/programs/GATK/GenomeAnalysisTK.jar \
+                        -T SelectVariants \
+                        -R /data/home/wolfproj/wolfproj-16/assemblies/Heliconius_melpomene_melpomene_Hmel2.5.scaffolds.fa \
+                        -V /data/home/wolfproj/wolfproj-16/rna_data/GATK/$file \
+                        -selectType SNP \
+                        --excludeFiltered \
+                        --restrictAllelesTo BIALLELIC \
+                        -o /data/home/wolfproj/wolfproj-16/rna_data/GATK/${file%.vcf}_SNPS.vcf
+        done
+done
+
+# --restrictAllelesTo - only use biallelic sites (SNPs with only one other variant)
+
+--------------------------
+
+### iv) zip compress vcfs
+
+#!/bin/bash
+#SBATCH --partition=usual
+#SBATCH --job-name="bgzip"
+#SBATCH -n 5
+#SBATCH --time=1-00:00:00
+#SBATCH --mail-user=L.Asis@campus.lmu.de
+#SBATCH --mail-type=END
+#SBATCH -w 'cruncher'
+
+module load bcftools/1.4.1
+
+for tissue in GATK_results/*
+do
+        for dir in $tissue/*
+        do
+                for file in $dir/*SNPS.vcf
+                do
+                        bgzip /data/home/wolfproj/wolfproj-16/rna_data/GATK/$file
+                done
+        done
+done
+
+--------------------------
+
+### v) indexing
+
+#!/bin/bash
+#SBATCH --partition=usual
+#SBATCH --job-name="bcfindex"
+#SBATCH -n 1
+#SBATCH --time=1-00:00:00
+#SBATCH --mail-user=L.Asis@campus.lmu.de
+#SBATCH --mail-type=END
+#SBATCH -w 'cruncher'
+
+module load bcftools/1.4.1
+
+for tissue in GATK_results/*
+do
+        for dir in $tissue/*
+        do
+                for file in $dir/*.gz
+                do
+                        bcftools index /data/home/wolfproj/wolfproj-16/rna_data/GATK/$file
+                done
+        done
+done
